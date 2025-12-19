@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2025-06-19
+
+### Added
+- **GPU acceleration support via CuPy** (optional dependency)
+- New `backend` parameter in `Pyx.__init__`: `"cpu"` (default), `"cuda"`, or `"auto"`
+- New `backend.py` module with `ArrayBackend` abstraction layer for NumPy/CuPy
+- New exports: `get_backend()`, `is_gpu_available()`, `CUPY_AVAILABLE`
+- New properties: `Pyx.backend_name` and `Pyx.uses_gpu` to check current backend
+
+### Changed
+- `_pyxelate()`, `_svd()`, `_median()`, and Bayer dithering now use GPU when `backend="cuda"`
+- GPU operations use CuPy's `cupyx.scipy.ndimage` for convolution, median filter, and Sobel
+
+### Installation
+- Install with GPU support: `pip install pyxelate[cuda]` (CUDA 12.x) or `pip install pyxelate[cuda11]` (CUDA 11.x)
+- CuPy is optional - library works without it using CPU-only mode
+
 ## [2.4.0] - 2025-06-19
 
 ### Changed

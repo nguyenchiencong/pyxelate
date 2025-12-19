@@ -28,7 +28,12 @@ try:
 except ImportError:
     from pal import BasePalette
 
-from typing import Callable, Optional, Union, Tuple
+from typing import Callable, Literal, Optional, Union, Tuple
+
+try:
+    from .backend import ArrayBackend, get_backend, BackendType, CUPY_AVAILABLE
+except ImportError:
+    from backend import ArrayBackend, get_backend, BackendType, CUPY_AVAILABLE
 
 
 class PyxWarning(Warning):
@@ -223,6 +228,7 @@ class Pyx(BaseEstimator, TransformerMixin):
         sobel: int = 3,
         svd: bool = True,
         alpha: float = 0.6,
+        backend: BackendType = "cpu",
     ) -> None:
         if (width is not None or height is not None) and factor is not None:
             raise ValueError(
@@ -283,6 +289,8 @@ class Pyx(BaseEstimator, TransformerMixin):
         self.model = BGM(self.palette, self.find_palette)
         self.is_fitted = False
         self.palette_cache = None
+        # setup compute backend (CPU or GPU)
+        self._backend = get_backend(backend)
 
     def _get_size(self, original_height: int, original_width: int) -> Tuple[int, int]:
         """Calculate new size depending on settings"""
@@ -371,6 +379,16 @@ class Pyx(BaseEstimator, TransformerMixin):
         """Get colors in palette as a plottable palette format (0. - 1. in correct shape)"""
         return self._image_to_float(self.colors.reshape(-1, 3))
 
+    @property
+    def backend_name(self) -> str:
+        """Get the name of the current compute backend ('cpu' or 'cuda')."""
+        return self._backend.name
+
+    @property
+    def uses_gpu(self) -> bool:
+        """Check if GPU acceleration is currently enabled."""
+        return self._backend.use_gpu
+
     def fit(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> "Pyx":
         """Fit palette and optionally calculate automatic dithering"""
         h, w, d = X.shape
@@ -409,21 +427,47 @@ class Pyx(BaseEstimator, TransformerMixin):
         """Downsample image based on the magnitude of its gradients in sobel-sided tiles.
 
         Uses parallel processing across RGB channels for better performance.
+        Supports GPU acceleration via CuPy when backend="cuda".
         """
         sobel_size = self.sobel
 
-        def _process_channel(channel: np.ndarray) -> np.ndarray:
-            """Process a single channel with Sobel-weighted downsampling."""
-            sobel = skimage_sobel(channel)
-            sobel += 1e-8  # avoid division by zero
-            sobel_norm = view_as_blocks(sobel, (sobel_size, sobel_size)).sum((2, 3))
-            sum_prod = view_as_blocks((sobel * channel), (sobel_size, sobel_size)).sum(
-                (2, 3)
-            )
-            return sum_prod / sobel_norm
+        if self._backend.use_gpu:
+            # GPU path: process all channels on GPU
+            X_pad = self._pad(X, self.sobel)
+            X_gpu = self._backend.to_device(X_pad.astype(np.float32))
+            results = []
+            for i in range(X_gpu.shape[2]):
+                channel = X_gpu[:, :, i]
+                sobel = self._backend.sobel(channel)
+                sobel = sobel + 1e-8  # avoid division by zero
+                # view_as_blocks equivalent on GPU
+                h, w = channel.shape
+                new_h, new_w = h // sobel_size, w // sobel_size
+                channel_blocks = channel[
+                    : new_h * sobel_size, : new_w * sobel_size
+                ].reshape(new_h, sobel_size, new_w, sobel_size)
+                sobel_blocks = sobel[
+                    : new_h * sobel_size, : new_w * sobel_size
+                ].reshape(new_h, sobel_size, new_w, sobel_size)
+                sobel_norm = sobel_blocks.sum(axis=(1, 3))
+                sum_prod = (sobel_blocks * channel_blocks).sum(axis=(1, 3))
+                results.append(sum_prod / sobel_norm)
+            result = self._backend.stack(results, axis=-1)
+            return self._backend.to_host(result).copy()
+        else:
+            # CPU path: use parallel channel processing
+            def _process_channel(channel: np.ndarray) -> np.ndarray:
+                """Process a single channel with Sobel-weighted downsampling."""
+                sobel = skimage_sobel(channel)
+                sobel += 1e-8  # avoid division by zero
+                sobel_norm = view_as_blocks(sobel, (sobel_size, sobel_size)).sum((2, 3))
+                sum_prod = view_as_blocks(
+                    (sobel * channel), (sobel_size, sobel_size)
+                ).sum((2, 3))
+                return sum_prod / sobel_norm
 
-        X_pad = self._pad(X, self.sobel)
-        return self._process_channels_parallel(X_pad, _process_channel).copy()
+            X_pad = self._pad(X, self.sobel)
+            return self._process_channels_parallel(X_pad, _process_channel).copy()
 
     def _pad(
         self,
@@ -473,15 +517,28 @@ class Pyx(BaseEstimator, TransformerMixin):
         """Custom median filter on HSV channels using 3x3 squares.
 
         Uses parallel processing across HSV channels.
+        Supports GPU acceleration via CuPy when backend="cuda".
         """
-
-        def _median_channel(channel: np.ndarray) -> np.ndarray:
-            return skimage_median(channel, footprint_rectangle((3, 3)))
-
         h, w, d = X.shape
         X_ = self._pad(X, 3)  # add padding for median filter
         X_ = rgb2hsv(X_)  # change to HSV
-        X_ = self._process_channels_parallel(X_, _median_channel)  # apply median filter
+
+        if self._backend.use_gpu:
+            # GPU path: use CuPy's median filter
+            X_gpu = self._backend.to_device(X_.astype(np.float32))
+            results = []
+            for i in range(X_gpu.shape[2]):
+                filtered = self._backend.median_filter(X_gpu[:, :, i], size=3)
+                results.append(filtered)
+            X_ = self._backend.stack(results, axis=-1)
+            X_ = self._backend.to_host(X_)
+        else:
+            # CPU path
+            def _median_channel(channel: np.ndarray) -> np.ndarray:
+                return skimage_median(channel, footprint_rectangle((3, 3)))
+
+            X_ = self._process_channels_parallel(X_, _median_channel)
+
         X_ = hsv2rgb(X_)  # go back to RGB
         return self._pad(X_, 3, h, w)  # remove added padding
 
@@ -512,6 +569,7 @@ class Pyx(BaseEstimator, TransformerMixin):
         """Reconstruct image via truncated SVD on each RGB channel.
 
         Uses parallel processing across RGB channels for better performance.
+        Supports GPU acceleration via CuPy when backend="cuda".
         """
         h, w = X.shape[:2]
         n_components = self._get_adaptive_svd_components(h, w)
@@ -519,17 +577,32 @@ class Pyx(BaseEstimator, TransformerMixin):
         if n_components >= h - 1 and n_components >= w - 1:
             return X  # skip SVD
 
-        def _svd_channel(channel: np.ndarray) -> np.ndarray:
-            U, s, V = randomized_svd(
-                channel,
-                n_components=n_components,
-                n_iter=self.SVD_MAX_ITER,
-                random_state=self.SVD_RANDOM_STATE,
-            )
-            A = U @ np.diag(s) @ V
-            return np.clip(A / 255.0, 0.0, 1.0)
+        if self._backend.use_gpu:
+            # GPU path: use CuPy's SVD
+            X_gpu = self._backend.to_device(X.astype(np.float32))
+            results = []
+            for i in range(X_gpu.shape[2]):
+                channel = X_gpu[:, :, i]
+                U, s, V = self._backend.svd(channel, n_components)
+                # Reconstruct: U @ diag(s) @ V
+                A = U @ (self._backend.xp.diag(s) @ V)
+                A = self._backend.clip(A / 255.0, 0.0, 1.0)
+                results.append(A)
+            result = self._backend.stack(results, axis=-1)
+            return self._backend.to_host(result)
+        else:
+            # CPU path: use parallel channel processing with randomized SVD
+            def _svd_channel(channel: np.ndarray) -> np.ndarray:
+                U, s, V = randomized_svd(
+                    channel,
+                    n_components=n_components,
+                    n_iter=self.SVD_MAX_ITER,
+                    random_state=self.SVD_RANDOM_STATE,
+                )
+                A = U @ np.diag(s) @ V
+                return np.clip(A / 255.0, 0.0, 1.0)
 
-        return self._process_channels_parallel(X, _svd_channel)
+            return self._process_channels_parallel(X, _svd_channel)
 
     def transform(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
         """Transform image to pyxelated version"""
@@ -638,13 +711,27 @@ class Pyx(BaseEstimator, TransformerMixin):
                 else self.DITHER_BAYER_MATRIX
             )
             # Apply convolution to all color channels at once
-            probs_convolved = np.array(
-                [
-                    convolve(probs_reshaped[i], bayer_matrix, mode="reflect")
-                    for i in range(n_colors)
-                ]
-            )
-            probs = np.argmin(probs_convolved, axis=0)
+            if self._backend.use_gpu:
+                # GPU path: use CuPy's convolve
+                probs_gpu = self._backend.to_device(probs_reshaped.astype(np.float32))
+                kernel_gpu = self._backend.to_device(bayer_matrix.astype(np.float32))
+                probs_convolved = self._backend.xp.array(
+                    [
+                        self._backend.convolve(probs_gpu[i], kernel_gpu, mode="reflect")
+                        for i in range(n_colors)
+                    ]
+                )
+                probs = self._backend.xp.argmin(probs_convolved, axis=0)
+                probs = self._backend.to_host(probs)
+            else:
+                # CPU path
+                probs_convolved = np.array(
+                    [
+                        convolve(probs_reshaped[i], bayer_matrix, mode="reflect")
+                        for i in range(n_colors)
+                    ]
+                )
+                probs = np.argmin(probs_convolved, axis=0)
             X_ = self.colors[probs]
         elif self.dither == "floyd":
             # Floyd-Steinberg-like algorithm

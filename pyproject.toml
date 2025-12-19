@@ -1,6 +1,6 @@
 [project]
 name = "pyxelate"
-version = "2.4.0"
+version = "2.5.0"
 description = "Downsample images to 8-bit pixel art."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -11,3 +11,7 @@ dependencies = [
     "scikit-image>=0.19.1",
     "scikit-learn>=0.24.1",
 ]
+
+[project.optional-dependencies]
+cuda = ["cupy-cuda12x>=13.0.0"]
+cuda11 = ["cupy-cuda11x>=13.0.0"]

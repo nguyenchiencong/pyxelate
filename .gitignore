@@ -139,3 +139,4 @@ dmypy.json
 
 # Others
 TRASH.md
+.ruff_cache/

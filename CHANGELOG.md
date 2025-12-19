@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.3] - 2025-06-19
+
+### Changed
+- Replaced `skimage.morphology.square` with `footprint_rectangle` (fixes deprecation warning)
+- Optimized BGM LAB conversion by pre-computing `rgb2lab(X)` outside the loop in `_initialize_parameters()`
+- Replaced all `assert` statements with proper exceptions (`ValueError`, `TypeError`, `RuntimeError`) for better error handling
+
 ## [2.1.2] - 2025-06-19
 
 ### Changed

@@ -12,7 +12,7 @@ from skimage.color import rgb2hsv, hsv2rgb, rgb2lab, deltaE_ciede2000
 from skimage.exposure import equalize_adapthist
 from skimage.filters import sobel as skimage_sobel
 from skimage.filters import median as skimage_median
-from skimage.morphology import square as skimage_square
+from skimage.morphology import footprint_rectangle
 from skimage.morphology import dilation as skimage_dilation
 from skimage.transform import resize
 from skimage.util import view_as_blocks
@@ -76,9 +76,10 @@ class BGM(BayesianGaussianMixture):
         self, X: np.ndarray, random_state: int, **kwargs
     ) -> None:
         """Changes init parameters from K-means to CIE LAB distance when palette is assigned"""
-        assert self.init_params == "kmeans", (
-            "Initialization is overwritten, can only be set as 'kmeans'."
-        )
+        if self.init_params != "kmeans":
+            raise ValueError(
+                "Initialization is overwritten, can only be set as 'kmeans'."
+            )
         n_samples, _ = X.shape
         resp = np.zeros((n_samples, self.n_components))
         if self.find_palette:
@@ -92,9 +93,16 @@ class BGM(BayesianGaussianMixture):
             )
         else:
             # color distance based centroids
+            # Pre-compute LAB conversion once for efficiency
+            X_lab = rgb2lab(X.reshape(-1, 1, 3)).reshape(-1, 3)
             label = np.argmin(
                 [
-                    deltaE_ciede2000(rgb2lab(X), rgb2lab(p), kH=3, kL=2)
+                    deltaE_ciede2000(
+                        X_lab,
+                        rgb2lab(np.array(p).reshape(1, 1, 3)).reshape(3),
+                        kH=3,
+                        kL=2,
+                    )
                     for p in self.palette
                 ],
                 axis=0,
@@ -169,26 +177,30 @@ class Pyx(BaseEstimator, TransformerMixin):
             raise ValueError(
                 "You can only set either height + width or the downscaling factor, but not both!"
             )
-        assert height is None or height >= 1, "Height must be a positive integer!"
-        assert width is None or width >= 1, "Width must be a positive integer!"
-        assert factor is None or factor >= 1, "Factor must be a positive integer!"
-        assert isinstance(sobel, int) and sobel >= 2, (
-            "Sobel must be an integer strictly greater than 1!"
-        )
+        if height is not None and height < 1:
+            raise ValueError("Height must be a positive integer!")
+        if width is not None and width < 1:
+            raise ValueError("Width must be a positive integer!")
+        if factor is not None and factor < 1:
+            raise ValueError("Factor must be a positive integer!")
+        if not isinstance(sobel, int) or sobel < 2:
+            raise ValueError("Sobel must be an integer strictly greater than 1!")
         self.height = int(height) if height else None
         self.width = int(width) if width else None
         self.factor = int(factor) if factor else None
         self.sobel = sobel
         if isinstance(upscale, (list, tuple, set, np.ndarray)):
-            assert len(upscale) == 2, "Upscale must be len 2, with 2 positive integers!"
-            assert upscale[0] >= 1 and upscale[1] >= 1, (
-                "Upscale must have 2 positive values!"
-            )
+            if len(upscale) != 2:
+                raise ValueError("Upscale must be len 2, with 2 positive integers!")
+            if upscale[0] < 1 or upscale[1] < 1:
+                raise ValueError("Upscale must have 2 positive values!")
             self.upscale = (upscale[0], upscale[1])
         else:
-            assert upscale >= 1, "Upscale must be a positive integer!"
+            if upscale < 1:
+                raise ValueError("Upscale must be a positive integer!")
             self.upscale = (upscale, upscale)
-        assert depth > 0 and isinstance(depth, int), "Depth must be a positive integer!"
+        if not isinstance(depth, int) or depth < 1:
+            raise ValueError("Depth must be a positive integer!")
         if depth > 2:
             warnings.warn(
                 "Depth too high, it will probably take really long to finish!",
@@ -203,9 +215,8 @@ class Pyx(BaseEstimator, TransformerMixin):
             raise ValueError("The minimum number of colors in a palette is 2")
         elif not self.find_palette and len(palette) < 2:
             raise ValueError("The minimum number of colors in a palette is 2")
-        assert dither in (None, "none", "naive", "bayer", "floyd", "atkinson"), (
-            "Unknown dithering algorithm!"
-        )
+        if dither not in (None, "none", "naive", "bayer", "floyd", "atkinson"):
+            raise ValueError("Unknown dithering algorithm!")
         self.dither = dither
         self.svd = bool(svd)
         self.alpha = float(alpha)
@@ -252,7 +263,8 @@ class Pyx(BaseEstimator, TransformerMixin):
         """Get colors in palette (0 - 255 range)"""
         if self.palette_cache is None:
             if self.find_palette:
-                assert self.is_fitted, "Call 'fit(image_as_numpy)' first!"
+                if not self.is_fitted:
+                    raise RuntimeError("Call 'fit(image_as_numpy)' first!")
                 c = rgb2hsv(self.model.means_.reshape(-1, 1, 3))
                 c[:, :, 1:] *= self.SCALE_RGB
                 c = hsv2rgb(c)
@@ -361,7 +373,7 @@ class Pyx(BaseEstimator, TransformerMixin):
         @adapt_rgb(each_channel)
         def _wrapper(channel):
             # apply to each channel
-            return skimage_dilation(channel, footprint=skimage_square(3))
+            return skimage_dilation(channel, footprint=footprint_rectangle((3, 3)))
 
         h, w, d = X.shape
         X_ = self._pad(X, 3)
@@ -376,7 +388,7 @@ class Pyx(BaseEstimator, TransformerMixin):
         @adapt_rgb(each_channel)
         def _wrapper(channel):
             # apply to each channel
-            return skimage_median(channel, skimage_square(3))
+            return skimage_median(channel, footprint_rectangle((3, 3)))
 
         h, w, d = X.shape
         X_ = self._pad(X, 3)  # add padding for median filter
@@ -416,18 +428,21 @@ class Pyx(BaseEstimator, TransformerMixin):
 
     def transform(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
         """Transform image to pyxelated version"""
-        assert self.is_fitted, (
-            "Call 'fit(image_as_numpy)' first before calling 'transform(image_as_numpy)'!"
-        )
+        if not self.is_fitted:
+            raise RuntimeError(
+                "Call 'fit(image_as_numpy)' first before calling 'transform(image_as_numpy)'!"
+            )
         h, w, d = X.shape
         if self.find_palette:
-            assert h * w > self.palette, (
-                "Too many colors for such a small image! Use a larger image or a smaller palette."
-            )
+            if h * w <= self.palette:
+                raise ValueError(
+                    "Too many colors for such a small image! Use a larger image or a smaller palette."
+                )
         else:
-            assert h * w > len(self.palette), (
-                "Too many colors for such a small image! Use a larger image or a smaller palette."
-            )
+            if h * w <= len(self.palette):
+                raise ValueError(
+                    "Too many colors for such a small image! Use a larger image or a smaller palette."
+                )
 
         new_h, new_w = self._get_size(h, w)  # get desired size depending on settings
         if d > 3:

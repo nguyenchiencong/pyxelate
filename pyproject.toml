@@ -1,6 +1,6 @@
 [project]
 name = "pyxelate"
-version = "2.3.0"
+version = "2.4.0"
 description = "Downsample images to 8-bit pixel art."
 readme = "README.md"
 requires-python = ">=3.12"

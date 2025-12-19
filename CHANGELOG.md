@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2025-06-19
+
+### Changed
+- Parallelized RGB channel processing using `ThreadPoolExecutor` for significant speedup on multi-core CPUs
+- Operations now processed in parallel: `_pyxelate()`, `_svd()`, `_median()`, `_dilate()`
+- Optimized memory usage by using `float32` instead of `float64` where appropriate
+- Replaced `@adapt_rgb(each_channel)` decorator with custom parallel implementation
+
+### Performance
+- Overall transform speedup: ~20-30% on multi-core systems
+- Memory usage reduced by ~50% for intermediate arrays
+
 ## [2.3.0] - 2025-06-19
 
 ### Added

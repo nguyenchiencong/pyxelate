@@ -1,5 +1,7 @@
 import numpy as np
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
@@ -26,7 +28,7 @@ try:
 except ImportError:
     from pal import BasePalette
 
-from typing import Optional, Union, Tuple
+from typing import Callable, Optional, Union, Tuple
 
 
 class PyxWarning(Warning):
@@ -296,10 +298,13 @@ class Pyx(BaseEstimator, TransformerMixin):
             return original_height, original_width
 
     def _image_to_float(self, image: np.ndarray) -> np.ndarray:
-        """Helper function that changes 0 - 255 color representation to 0. - 1."""
+        """Helper function that changes 0 - 255 color representation to 0. - 1.
+
+        Uses float32 for better memory efficiency.
+        """
         if np.issubdtype(image.dtype, np.integer):
-            return np.clip(np.array(image, dtype=float) / 255.0, 0, 1).astype(float)
-        return image
+            return np.clip(image.astype(np.float32) / 255.0, 0, 1)
+        return image.astype(np.float32) if image.dtype == np.float64 else image
 
     def _image_to_int(self, image: np.ndarray) -> np.ndarray:
         """Helper function that changes 0. - 1. color representation to 0 - 255"""
@@ -314,6 +319,27 @@ class Pyx(BaseEstimator, TransformerMixin):
         if image.dtype in (float, np.float32, np.float64):  # np.float is deprecated
             return np.clip(np.array(image, dtype=float) * 255.0, 0, 255).astype(int)
         return image
+
+    def _process_channels_parallel(
+        self, X: np.ndarray, func: Callable[[np.ndarray], np.ndarray]
+    ) -> np.ndarray:
+        """Process RGB channels in parallel using ThreadPoolExecutor.
+
+        Args:
+            X: Input image array with shape (H, W, C)
+            func: Function to apply to each channel
+
+        Returns:
+            Processed image with same shape as input
+        """
+        n_channels = X.shape[2] if X.ndim == 3 else 1
+        if n_channels == 1:
+            return func(X)
+
+        with ThreadPoolExecutor(max_workers=min(n_channels, 3)) as executor:
+            futures = [executor.submit(func, X[:, :, i]) for i in range(n_channels)]
+            results = [f.result() for f in futures]
+        return np.stack(results, axis=-1)
 
     @property
     def colors(self) -> np.ndarray:
@@ -380,21 +406,24 @@ class Pyx(BaseEstimator, TransformerMixin):
         return self
 
     def _pyxelate(self, X: np.ndarray) -> np.ndarray:
-        """Downsample image based on the magnitude of its gradients in sobel-sided tiles"""
+        """Downsample image based on the magnitude of its gradients in sobel-sided tiles.
 
-        @adapt_rgb(each_channel)
-        def _wrapper(channel):
-            # apply to all RGB channels
+        Uses parallel processing across RGB channels for better performance.
+        """
+        sobel_size = self.sobel
+
+        def _process_channel(channel: np.ndarray) -> np.ndarray:
+            """Process a single channel with Sobel-weighted downsampling."""
             sobel = skimage_sobel(channel)
             sobel += 1e-8  # avoid division by zero
-            sobel_norm = view_as_blocks(sobel, (self.sobel, self.sobel)).sum((2, 3))
-            sum_prod = view_as_blocks((sobel * channel), (self.sobel, self.sobel)).sum(
+            sobel_norm = view_as_blocks(sobel, (sobel_size, sobel_size)).sum((2, 3))
+            sum_prod = view_as_blocks((sobel * channel), (sobel_size, sobel_size)).sum(
                 (2, 3)
             )
             return sum_prod / sobel_norm
 
         X_pad = self._pad(X, self.sobel)
-        return _wrapper(X_pad).copy()
+        return self._process_channels_parallel(X_pad, _process_channel).copy()
 
     def _pad(
         self,
@@ -425,32 +454,34 @@ class Pyx(BaseEstimator, TransformerMixin):
             ]
 
     def _dilate(self, X: np.ndarray) -> np.ndarray:
-        """Dilate semi-transparent edges to remove artifacts (for images with opacity)"""
+        """Dilate semi-transparent edges to remove artifacts (for images with opacity).
 
-        @adapt_rgb(each_channel)
-        def _wrapper(channel):
-            # apply to each channel
+        Uses parallel processing across RGB channels.
+        """
+
+        def _dilate_channel(channel: np.ndarray) -> np.ndarray:
             return skimage_dilation(channel, footprint=footprint_rectangle((3, 3)))
 
         h, w, d = X.shape
         X_ = self._pad(X, 3)
         mask = X_[:, :, 3]
-        alter = _wrapper(X_[:, :, :3])
+        alter = self._process_channels_parallel(X_[:, :, :3], _dilate_channel)
         X_[:, :, :3][mask < self.alpha] = alter[mask < self.alpha]
         return self._pad(X_, 3, h, w)
 
     def _median(self, X: np.ndarray) -> np.ndarray:
-        """Custom median filter on HSV channels using 3x3 squares"""
+        """Custom median filter on HSV channels using 3x3 squares.
 
-        @adapt_rgb(each_channel)
-        def _wrapper(channel):
-            # apply to each channel
+        Uses parallel processing across HSV channels.
+        """
+
+        def _median_channel(channel: np.ndarray) -> np.ndarray:
             return skimage_median(channel, footprint_rectangle((3, 3)))
 
         h, w, d = X.shape
         X_ = self._pad(X, 3)  # add padding for median filter
         X_ = rgb2hsv(X_)  # change to HSV
-        X_ = _wrapper(X_)  # apply median filter
+        X_ = self._process_channels_parallel(X_, _median_channel)  # apply median filter
         X_ = hsv2rgb(X_)  # go back to RGB
         return self._pad(X_, 3, h, w)  # remove added padding
 
@@ -478,26 +509,27 @@ class Pyx(BaseEstimator, TransformerMixin):
         return min(self.SVD_N_COMPONENTS, max(8, min_dim // 4))
 
     def _svd(self, X: np.ndarray) -> np.ndarray:
-        """Reconstruct image via truncated SVD on each RGB channel"""
+        """Reconstruct image via truncated SVD on each RGB channel.
+
+        Uses parallel processing across RGB channels for better performance.
+        """
         h, w = X.shape[:2]
         n_components = self._get_adaptive_svd_components(h, w)
 
         if n_components >= h - 1 and n_components >= w - 1:
             return X  # skip SVD
 
-        @adapt_rgb(each_channel)
-        def _wrapper(dim):
+        def _svd_channel(channel: np.ndarray) -> np.ndarray:
             U, s, V = randomized_svd(
-                dim,
+                channel,
                 n_components=n_components,
                 n_iter=self.SVD_MAX_ITER,
                 random_state=self.SVD_RANDOM_STATE,
             )
-            S = np.diag(s.ravel())
-            A = U.dot(S.dot(V))
+            A = U @ np.diag(s) @ V
             return np.clip(A / 255.0, 0.0, 1.0)
 
-        return _wrapper(X)
+        return self._process_channels_parallel(X, _svd_channel)
 
     def transform(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> np.ndarray:
         """Transform image to pyxelated version"""

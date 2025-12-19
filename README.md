@@ -2,11 +2,53 @@
   <img width="450" height="110" src="examples/logo.png">
 </p>
 
-Super Pyxelate converts images to 8-bit pixel art. It is an improved, faster implementation of the [original Pyxelate](https://github.com/sedthh/pyxelate/releases/tag/1.2.1) algorithm with palette transfer support and enhanced dithering. 
+Super Pyxelate converts images to 8-bit pixel art. It is an improved, faster implementation of the [original Pyxelate](https://github.com/sedthh/pyxelate/releases/tag/1.2.1) algorithm with palette transfer support and enhanced dithering. This fork is maintained at [github.com/nguyenchiencong/pyxelate](https://github.com/nguyenchiencong/pyxelate).
 
 ![Pixel art corgi](/examples/p_corgi.png)
 
-**NOTE:** Check out the new [Retro Diffusion](https://astropulse.gumroad.com/l/RetroDiffusion), a generative AI alternative based on [Stable Diffusion](https://stability.ai/blog/stable-diffusion-public-release)!
+# Installation
+
+Using [uv](https://docs.astral.sh/uv/) (recommended):
+```bash
+uv add git+https://github.com/nguyenchiencong/pyxelate.git
+```
+
+Using pip:
+```bash
+pip install git+https://github.com/nguyenchiencong/pyxelate.git --upgrade
+```
+
+### Development Setup
+
+Clone and set up with uv:
+```bash
+git clone https://github.com/nguyenchiencong/pyxelate.git
+cd pyxelate
+uv sync
+```
+
+Or with pip/virtualenv:
+```bash
+git clone https://github.com/nguyenchiencong/pyxelate.git
+cd pyxelate
+python -m venv .venv
+
+# activate venv on Unix / macOS
+source .venv/bin/activate
+# or on Windows
+.\.venv\Scripts\activate
+
+pip install -e .
+```
+
+### Dependencies
+
+Pyxelate relies on the following libraries to run:
+- [numpy](https://numpy.org/) >= 2.0.0
+- [scikit-learn](https://scikit-learn.org/stable/) >= 0.24.1
+- [scikit-image](https://scikit-image.org/) >= 0.19.1
+- [numba](https://numba.pydata.org/) >= 0.53.1
+- [matplotlib](https://matplotlib.org/) >= 3.10.8
 
 # Usage
 
@@ -118,32 +160,23 @@ my_pal = Pal.from_rgb([[255, 255, 255], [0, 0, 0]])
 
 Fitting existing palettes on different images will also have different results for `transform()`.
 
-# Installation
-```
-pip install git+https://github.com/sedthh/pyxelate.git --upgrade
-```
-
-Create a virtual environment:
-```
-cd pyxelate
-pip install virtualenv --upgrade
-virtualenv -p python3.9.2 pyxenv
-
-# activate venv on Unix / macOS
-source pyxenv/bin/activate
-# or on Windows
-.\pyxenv\Scripts\activate
-
-pip install -r requirements.txt
-```
-
-
-Pyxelate relies on the following libraries to run (included in *requirements.txt*):
-- [sklearn 0.24.1](https://scikit-learn.org/stable/)
-- [skimage 0.18.1](https://scikit-image.org/)
-- [numba 0.53.1](https://numba.pydata.org/)
 ![The cathode that burns twice as bright, burns half the resolution](/examples/p_br.png)
+
+## Creating animations
+It is possible to use Pyxelate on a sequence of images to create animations via the CLI tool or the iterator in the `Vid` class. 
+
+| Parameter | Description |
+| --- | --- |
+| images | List of loaded images (image representations must be numpy arrays) to iterate over |
+| pad | In case the original image sequence has black bars, set pad to the height of these bars to cut them off automatically before the conversion process. Can be set as `int` or `(int, int)` for different (top, bottom) values. |
+| sobel | The size of the sobel operator used when calling Pyx() (they share the same default value, change it only if you changed it in Pyx()). |
+| keyframe | The percentage of difference needed for two frames to be considered similar. If the differenece is bigger, a new keyframe will be created. Default is `0.30`. |
+| sensitivity | The percentage of difference between pixels required for two areas to be considered different. Default is `0.10`, lower it if you see unwanted artifacts in your animation, raise it if you want a more layered look. |
+
+You can turn a video into a sequence of images using [ffmpeg](https://www.ffmpeg.org/).
+
 # FAQ
+
 The source code is available under the **MIT license** 
 but I would appreciate the credit if your work uses Pyxelate (for instance you may add me in the Special Thanks section in the credits of your videogame)!
 
@@ -161,18 +194,5 @@ Preprocessing and color space conversion tricks are also applied for better resu
 - Dithering takes time (especially *atkinson*) as they are mostly implemented in plain python with loops.
 
 <p align="center">
-  <a href="https://twitter.com/OzegoDub" taget="_blank"><img alt="via https://twitter.com/OzegoDub" src="./examples/ozego.png" /></a>
+  <img alt="via OzegoDub" src="./examples/ozego.png" />
 </p>
-
-## Creating animations
-It is possible to use Pyxelate on a sequence of images to create animations via the CLI tol or the iterator in the `Vid` class. 
-
-| Parameter | Description |
-| --- | --- |
-| images | List of loaded images (image representations must be numpy arrays) to iterate over |
-| pad | In case the original image sequence has black bars, set pad to the height of these bars to cut them off automatically before the conversion process. Can be set as `int` or `(int, int)` for different (top, bottom) values. |
-| sobel | The size of the sobel operator used when calling Pyx() (they share the same default value, change it only if you changed it in Pyx()). |
-| keyframe | The percentage of difference needed for two frames to be considered similar. If the differenece is bigger, a new keyframe will be created. Default is `0.30`. |
-| sensitivity | The percentage of difference between pixels required for two areas to be considered different. Default is `0.10`, lower it if you see unwanted artifacts in your animation, raise it if you want a more layered look. |
-
-You can turn a video into a sequence of images using [ffmpeg](https://www.ffmpeg.org/).

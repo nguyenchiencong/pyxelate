@@ -1,0 +1,13 @@
+[project]
+name = "pyxelate"
+version = "2.1.2"
+description = "Downsample images to 8-bit pixel art."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0.0",
+    "matplotlib>=3.10.8",
+    "numba>=0.53.1",
+    "scikit-image>=0.19.1",
+    "scikit-learn>=0.24.1",
+]

@@ -106,7 +106,7 @@ class BGM(BayesianGaussianMixture):
                 [
                     deltaE_ciede2000(
                         X_lab,
-                        rgb2lab(np.array(p).reshape(1, 1, 3)).reshape(3),
+                        rgb2lab(np.array(p).reshape(1, 1, 3)).reshape(1, 3),
                         kH=3,
                         kL=2,
                     )

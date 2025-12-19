@@ -55,7 +55,7 @@ Pyxelate relies on the following libraries to run:
 Once installed, Pyxelate can be used either from the command line or from Python.
 
 ```bash
-$ pyxelate examples/blazkowicz.jpg output.png --factor 14 --palette 7
+$ pyxelate examples/blazkowicz.jpg output.png --factor 14 --palette 8
 
 Pyxelating examples/blazkowicz.jpg...
 Wrote output.png
@@ -74,7 +74,7 @@ from pyxelate import Pyx, Pal
 image = io.imread("examples/blazkowicz.jpg")  
 
 downsample_by = 14  # new image will be 1/14th of the original in size
-palette = 7  # find 7 colors
+palette = 8  # find 8 colors
 
 # 1) Instantiate Pyx transformer
 pyx = Pyx(factor=downsample_by, palette=palette)
@@ -98,7 +98,7 @@ robocop = io.imread("examples/robocop.jpg")
 
 # fit a model on each
 pyx_car = Pyx(factor=5, palette=8, dither="none").fit(car)
-pyx_robocop = Pyx(factor=6, palette=7, dither="naive").fit(robocop)
+pyx_robocop = Pyx(factor=6, palette=8, dither="naive").fit(robocop)
 
 """
 pyx_car.transform(car)
@@ -117,6 +117,16 @@ trex = io.imread("examples/trex.png")
 trex_p = Pyx(factor=9, palette=4, dither="naive", alpha=.6).fit_transform(trex)
 ```
 ![Transparency for sprites](/examples/p_trex.png)
+
+## Reproducible Examples
+
+All example images in this README can be regenerated using the provided script:
+
+```bash
+uv run python regenerate_examples.py
+```
+
+This ensures that the documentation always matches the current behavior of the codebase.
 
 ## Hyperparameters for Pyx()
 | Parameter | Description |
@@ -191,7 +201,7 @@ Preprocessing and color space conversion tricks are also applied for better resu
 - There is **no one setting fits all**, try experimenting with different parameters for better results! A setting that generates visually pleasing result on one image might not work well for another.
 - The bigger the resulting image, the longer the process will take. Note that most parts of the algorithm are **O(H*W)** so an image that is twice the size will take 4 times longer to compute. 
 - Assigning existing palettes will take longer for larger palettes, because [LAB color distance](https://scikit-image.org/docs/dev/api/skimage.color.html#skimage.color.deltaE_ciede2000) has to be calculated between each color separately. 
-- Dithering takes time (especially *atkinson*) as they are mostly implemented in plain python with loops.
+- Dithering takes time (especially *atkinson* and *floyd*) as they are implemented in Python (though *atkinson* is now optimized with numba for significant speedup).
 
 <p align="center">
   <img alt="via OzegoDub" src="./examples/ozego.png" />

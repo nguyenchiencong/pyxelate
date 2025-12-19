@@ -159,6 +159,55 @@ class Pyx(BaseEstimator, TransformerMixin):
             [0.4375, -0.0625, 0.3125, -0.1875],
         ]
     )
+    # precalculated 8x8 Bayer Matrix / 64 - 0.5 (higher quality for larger images)
+    DITHER_BAYER_MATRIX_8x8 = np.array(
+        [
+            [-0.5, 0.0, -0.375, 0.125, -0.46875, 0.03125, -0.34375, 0.15625],
+            [0.25, -0.25, 0.375, -0.125, 0.28125, -0.21875, 0.40625, -0.09375],
+            [-0.3125, 0.1875, -0.4375, 0.0625, -0.28125, 0.21875, -0.40625, 0.09375],
+            [0.4375, -0.0625, 0.3125, -0.1875, 0.46875, -0.03125, 0.34375, -0.15625],
+            [
+                -0.453125,
+                0.046875,
+                -0.328125,
+                0.171875,
+                -0.484375,
+                0.015625,
+                -0.359375,
+                0.140625,
+            ],
+            [
+                0.296875,
+                -0.203125,
+                0.421875,
+                -0.078125,
+                0.265625,
+                -0.234375,
+                0.390625,
+                -0.109375,
+            ],
+            [
+                -0.265625,
+                0.234375,
+                -0.390625,
+                0.109375,
+                -0.296875,
+                0.203125,
+                -0.421875,
+                0.078125,
+            ],
+            [
+                0.484375,
+                -0.015625,
+                0.359375,
+                -0.140625,
+                0.453125,
+                -0.046875,
+                0.328125,
+                -0.171875,
+            ],
+        ]
+    )
 
     def __init__(
         self,
@@ -215,7 +264,15 @@ class Pyx(BaseEstimator, TransformerMixin):
             raise ValueError("The minimum number of colors in a palette is 2")
         elif not self.find_palette and len(palette) < 2:
             raise ValueError("The minimum number of colors in a palette is 2")
-        if dither not in (None, "none", "naive", "bayer", "floyd", "atkinson"):
+        if dither not in (
+            None,
+            "none",
+            "naive",
+            "bayer",
+            "bayer8",
+            "floyd",
+            "atkinson",
+        ):
             raise ValueError("Unknown dithering algorithm!")
         self.dither = dither
         self.svd = bool(svd)
@@ -398,25 +455,41 @@ class Pyx(BaseEstimator, TransformerMixin):
         return self._pad(X_, 3, h, w)  # remove added padding
 
     def _warn_on_dither_with_alpha(self, d: int) -> None:
-        if d > 3 and self.dither in ("bayer", "floyd", "atkinson"):
+        if d > 3 and self.dither in ("bayer", "bayer8", "floyd", "atkinson"):
             warnings.warn(
                 "Images with transparency can have unwanted artifacts around the edges with this dithering method. Use 'naive' instead.",
                 PyxWarning,
             )
 
-    def _svd(self, X):
+    def _get_adaptive_svd_components(self, h: int, w: int) -> int:
+        """Calculate adaptive SVD components based on image dimensions.
+
+        Smaller images need fewer components to avoid over-smoothing,
+        while larger images can benefit from more components.
+
+        Args:
+            h: Image height
+            w: Image width
+
+        Returns:
+            Number of SVD components to use (between 8 and SVD_N_COMPONENTS)
+        """
+        min_dim = min(h, w)
+        return min(self.SVD_N_COMPONENTS, max(8, min_dim // 4))
+
+    def _svd(self, X: np.ndarray) -> np.ndarray:
         """Reconstruct image via truncated SVD on each RGB channel"""
-        if (
-            self.SVD_N_COMPONENTS >= X.shape[0] - 1
-            and self.SVD_N_COMPONENTS >= X.shape[1] - 1
-        ):
+        h, w = X.shape[:2]
+        n_components = self._get_adaptive_svd_components(h, w)
+
+        if n_components >= h - 1 and n_components >= w - 1:
             return X  # skip SVD
 
         @adapt_rgb(each_channel)
         def _wrapper(dim):
             U, s, V = randomized_svd(
                 dim,
-                n_components=self.SVD_N_COMPONENTS,
+                n_components=n_components,
                 n_iter=self.SVD_MAX_ITER,
                 random_state=self.SVD_RANDOM_STATE,
             )
@@ -518,19 +591,24 @@ class Pyx(BaseEstimator, TransformerMixin):
 
             X_[odd_row_mask] = self.colors[p2[odd_row_mask]]
             X_[even_row_mask] = self.colors[p2[even_row_mask]]
-        elif self.dither == "bayer":
+        elif self.dither in ("bayer", "bayer8"):
             # Bayer-like dithering (optimized with batch convolution)
+            # bayer = 4x4 matrix, bayer8 = 8x8 matrix for higher quality
             self._warn_on_dither_with_alpha(d)
             probs = self.model.predict_proba(reshaped)
             n_colors = len(self.colors)
             # Reshape all probabilities at once and stack for batch processing
             probs_reshaped = probs.T.reshape(n_colors, final_h, final_w)
+            # Select appropriate Bayer matrix
+            bayer_matrix = (
+                self.DITHER_BAYER_MATRIX_8x8
+                if self.dither == "bayer8"
+                else self.DITHER_BAYER_MATRIX
+            )
             # Apply convolution to all color channels at once
             probs_convolved = np.array(
                 [
-                    convolve(
-                        probs_reshaped[i], self.DITHER_BAYER_MATRIX, mode="reflect"
-                    )
+                    convolve(probs_reshaped[i], bayer_matrix, mode="reflect")
                     for i in range(n_colors)
                 ]
             )

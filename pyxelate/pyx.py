@@ -491,63 +491,59 @@ class Pyx(BaseEstimator, TransformerMixin):
             probs = self.model.predict(reshaped)
             X_ = self.colors[probs]
         elif self.dither == "naive":
-            # pyxelate dithering based on BGM probability density only
+            # pyxelate dithering based on BGM probability density only (vectorized)
             probs = self.model.predict_proba(reshaped)
             p = np.argmax(probs, axis=1)
             X_ = self.colors[p]
             probs[np.arange(len(p)), p] = 0
             p2 = np.argmax(probs, axis=1)  # second best
-            v1 = np.max(probs, axis=1) > (1.0 / (len(self.colors) + 1))
-            v2 = np.max(probs, axis=1) > (
-                1.0 / (len(self.colors) * self.DITHER_NAIVE_BOOST + 1)
-            )
-            pad = not bool(final_w % 2)
-            for i in range(0, len(X_), 2):
-                m = (i // final_w) % 2
-                if pad:
-                    i += m
-                if m:
-                    if v1[i]:
-                        X_[i] = self.colors[p2[i]]
-                elif v2[i]:
-                    X_[i] = self.colors[p2[i]]
+            max_probs = np.max(probs, axis=1)
+            v1 = max_probs > (1.0 / (len(self.colors) + 1))
+            v2 = max_probs > (1.0 / (len(self.colors) * self.DITHER_NAIVE_BOOST + 1))
+
+            # Create checkerboard pattern using vectorized operations
+            rows = np.arange(final_h)
+            cols = np.arange(final_w)
+            # row_parity[y, x] = y % 2 (0 for even rows, 1 for odd rows)
+            row_parity = (rows[:, None] + np.zeros(final_w, dtype=int)).ravel() % 2
+            # col_parity[i] = (i % final_w) % 2, but we want every other pixel
+            pixel_idx = np.arange(final_h * final_w)
+            col_idx = pixel_idx % final_w
+            is_even_col = (col_idx % 2) == 0
+
+            # For odd rows (row_parity == 1): apply v1 on even columns
+            # For even rows (row_parity == 0): apply v2 on even columns
+            odd_row_mask = (row_parity == 1) & is_even_col & v1
+            even_row_mask = (row_parity == 0) & is_even_col & v2
+
+            X_[odd_row_mask] = self.colors[p2[odd_row_mask]]
+            X_[even_row_mask] = self.colors[p2[even_row_mask]]
         elif self.dither == "bayer":
-            # Bayer-like dithering
+            # Bayer-like dithering (optimized with batch convolution)
             self._warn_on_dither_with_alpha(d)
             probs = self.model.predict_proba(reshaped)
-            probs = [
-                convolve(
-                    probs[:, i].reshape((final_h, final_w)),
-                    self.DITHER_BAYER_MATRIX,
-                    mode="reflect",
-                )
-                for i in range(len(self.colors))
-            ]
-            probs = np.argmin(probs, axis=0)
+            n_colors = len(self.colors)
+            # Reshape all probabilities at once and stack for batch processing
+            probs_reshaped = probs.T.reshape(n_colors, final_h, final_w)
+            # Apply convolution to all color channels at once
+            probs_convolved = np.array(
+                [
+                    convolve(
+                        probs_reshaped[i], self.DITHER_BAYER_MATRIX, mode="reflect"
+                    )
+                    for i in range(n_colors)
+                ]
+            )
+            probs = np.argmin(probs_convolved, axis=0)
             X_ = self.colors[probs]
         elif self.dither == "floyd":
             # Floyd-Steinberg-like algorithm
             self._warn_on_dither_with_alpha(d)
             X_ = self._dither_floyd(reshaped, (final_h, final_w))
         elif self.dither == "atkinson":
-            # Atkinson-like algorithm
+            # Atkinson-like algorithm (optimized with numba)
             self._warn_on_dither_with_alpha(d)
-            res = np.zeros((final_h + 2, final_w + 3), dtype=int)
-            X_ = np.pad(X_, ((0, 2), (1, 2), (0, 0)), "reflect")
-            for y in range(final_h):
-                for x in range(1, final_w + 1):
-                    pred = self.model.predict_proba(X_[y, x, :3].reshape(-1, 3))
-                    res[y, x] = np.argmax(pred)
-                    quant_error = (X_[y, x, :3] - self.model.means_[res[y, x]]) / 8.0
-                    X_[y, x + 1, :3] += quant_error
-                    X_[y, x + 2, :3] += quant_error
-                    X_[y + 1, x - 1, :3] += quant_error
-                    X_[y + 1, x, :3] += quant_error
-                    X_[y + 1, x + 1, :3] += quant_error
-                    X_[y + 2, x, :3] += quant_error
-            # fix edges
-            res = res[:final_h, 1 : final_w + 1]
-            X_ = self.colors[res.reshape(final_h * final_w)]
+            X_ = self._dither_atkinson(reshaped, (final_h, final_w))
 
         X_ = np.reshape(X_, (final_h, final_w, 3))  # reshape to actual image dimensions
         if alpha_mask is not None:
@@ -595,4 +591,77 @@ class Pyx(BaseEstimator, TransformerMixin):
             [probs[:, i].reshape((final_h, final_w)) for i in range(len(self.colors))]
         )
         res = _wrapper(probs, final_h, final_w)
+        return self.colors[res.reshape(final_h * final_w)]
+
+    def _dither_atkinson(
+        self, reshaped: np.ndarray, final_shape: Tuple[int, int]
+    ) -> np.ndarray:
+        """Atkinson-like dithering optimized with numba"""
+
+        @njit()
+        def _atkinson_njit(
+            image: np.ndarray,
+            means: np.ndarray,
+            final_h: int,
+            final_w: int,
+        ) -> np.ndarray:
+            """
+            Atkinson dithering with error diffusion.
+
+            Unlike Floyd-Steinberg which diffuses 100% of error, Atkinson only
+            diffuses 6/8 (75%) of the quantization error, giving a lighter,
+            more open appearance typical of early Macintosh graphics.
+
+            Error diffusion pattern:
+                    [*] [1] [1]
+                [1] [1] [1]
+                    [1]
+            Each [1] receives 1/8 of the error (total 6/8 = 75%)
+            """
+            res = np.zeros((final_h, final_w), dtype=np.int32)
+            # Pad image for boundary handling: 2 rows below, 1 col left, 2 cols right
+            padded = np.zeros((final_h + 2, final_w + 3, 3), dtype=np.float64)
+            for y in range(final_h):
+                for x in range(final_w):
+                    for c in range(3):
+                        padded[y, x + 1, c] = image[y * final_w + x, c]
+
+            n_colors = means.shape[0]
+
+            for y in range(final_h):
+                for x in range(1, final_w + 1):
+                    # Find closest color using squared Euclidean distance
+                    pixel = padded[y, x]
+                    min_dist = 1e30
+                    best_idx = 0
+                    for i in range(n_colors):
+                        dist = 0.0
+                        for c in range(3):
+                            diff = pixel[c] - means[i, c]
+                            dist += diff * diff
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_idx = i
+
+                    res[y, x - 1] = best_idx
+
+                    # Compute quantization error (only 1/8 per neighbor, 6 neighbors = 75% total)
+                    for c in range(3):
+                        quant_error = (pixel[c] - means[best_idx, c]) / 8.0
+                        # Diffuse to 6 neighbors
+                        padded[y, x + 1, c] += quant_error  # right
+                        padded[y, x + 2, c] += quant_error  # right+1
+                        padded[y + 1, x - 1, c] += quant_error  # below-left
+                        padded[y + 1, x, c] += quant_error  # below
+                        padded[y + 1, x + 1, c] += quant_error  # below-right
+                        padded[y + 2, x, c] += quant_error  # 2 below
+
+            return res
+
+        final_h, final_w = final_shape
+        # Use model means directly (they're in 0-1 float space)
+        means = self.model.means_.astype(np.float64)
+        image = reshaped.astype(np.float64)
+
+        res = _atkinson_njit(image, means, final_h, final_w)
         return self.colors[res.reshape(final_h * final_w)]

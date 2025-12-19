@@ -1,4 +1,4 @@
-__version__ = "2.1.3"
+__version__ = "2.2.0"
 
 __short_description__ = ("Downsample images to 8-bit pixel art.",)
 __license__ = "MIT"

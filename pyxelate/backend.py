@@ -203,9 +203,35 @@ class ArrayBackend:
             Tuple of (U, s, V) matrices.
         """
         if self.use_gpu:
-            # CuPy has built-in SVD
-            U, s, V = self.xp.linalg.svd(arr, full_matrices=False)
-            return U[:, :n_components], s[:n_components], V[:n_components, :]
+            try:
+                # CuPy has built-in SVD
+                U, s, V = self.xp.linalg.svd(arr, full_matrices=False)
+                return U[:, :n_components], s[:n_components], V[:n_components, :]
+            except Exception:
+                # Fallback to CPU if GPU SVD fails (e.g. convergence error or OOM)
+                import warnings
+
+                warnings.warn(
+                    "GPU SVD failed. Falling back to CPU implementation.",
+                    RuntimeWarning,
+                )
+
+                from sklearn.utils.extmath import randomized_svd
+
+                # Move to CPU
+                arr_cpu = self.to_host(arr)
+
+                # Compute on CPU
+                U_cpu, s_cpu, V_cpu = randomized_svd(
+                    arr_cpu, n_components=n_components, **kwargs
+                )
+
+                # Move back to GPU so downstream operations continue on device
+                return (
+                    self.to_device(U_cpu),
+                    self.to_device(s_cpu),
+                    self.to_device(V_cpu),
+                )
         else:
             from sklearn.utils.extmath import randomized_svd
 

@@ -260,7 +260,7 @@ def generate_corgi() -> None:
             {"title": "Commodore 64", "image": corgi_c64},
         ],
         "p_corgi.png",
-        fig_h=18,
+        fig_h=9,
     )
     print(f"  Done in {time.time() - start:.1f}s")
 

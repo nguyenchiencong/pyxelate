@@ -307,20 +307,36 @@ class Pyx(BaseEstimator, TransformerMixin):
         else:
             return original_height, original_width
 
+    def _perceptual_luminance(self, rgb: np.ndarray) -> np.ndarray:
+        """Compute perceptual luminance using ITU-R BT.601 weights.
+
+        Args:
+            rgb: Array of RGB values (uint8, 0-255)
+
+        Returns:
+            Luminance values (0-255 scale)
+        """
+        return 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+
     def _fix_dark_speckles(
-        self, X: np.ndarray, max_cluster_size: int = 10, bright_threshold: int = 150
+        self,
+        X: np.ndarray,
+        max_cluster_size: int = 10,
+        dark_lum_threshold: int = 30,
+        bright_lum_threshold: int = 60,
     ) -> np.ndarray:
         """Remove isolated dark pixel clusters that appear as artifacts in bright regions.
 
-        This post-processing step identifies small clusters of the darkest palette color
+        This post-processing step identifies small clusters of dark palette colors
         that are surrounded by bright pixels and replaces them with the most common
         neighboring color. This fixes speckle artifacts caused by the HSV/SCALE_RGB
         processing pushing certain saturated colors to extreme values.
 
         Args:
-            X: The pixelated image (H, W, 3) as uint8
+            X: The pixelated image (H, W, 3 or 4) as uint8
             max_cluster_size: Maximum size of clusters to consider as artifacts (default 10)
-            bright_threshold: Minimum luminance sum for a pixel to be considered "bright" (default 150)
+            dark_lum_threshold: Maximum perceptual luminance for a color to be considered "dark" (default 30)
+            bright_lum_threshold: Minimum perceptual luminance for a neighbor to be considered "bright" (default 100)
 
         Returns:
             The image with dark speckle artifacts removed
@@ -333,16 +349,22 @@ class Pyx(BaseEstimator, TransformerMixin):
         else:
             rgb = X
 
-        # Find the darkest color in the palette
+        # Find all unique colors in the palette
         colors = np.unique(rgb.reshape(-1, 3), axis=0)
         if len(colors) <= 1:
             return X  # Nothing to fix
 
-        luminances = colors.sum(axis=1)
-        darkest = colors[np.argmin(luminances)]
+        # Use perceptual luminance to find dark colors
+        color_luminances = self._perceptual_luminance(colors)
+        dark_colors = colors[color_luminances < dark_lum_threshold]
 
-        # Find all pixels matching the darkest color
-        dark_mask = np.all(rgb == darkest, axis=2)
+        if len(dark_colors) == 0:
+            return X  # No dark colors to fix
+
+        # Create mask for ALL dark color pixels
+        dark_mask = np.zeros(rgb.shape[:2], dtype=bool)
+        for dark_color in dark_colors:
+            dark_mask |= np.all(rgb == dark_color, axis=2)
 
         # Label connected components of dark pixels
         labeled, num_features = label(dark_mask)
@@ -368,14 +390,14 @@ class Pyx(BaseEstimator, TransformerMixin):
             if len(neighbor_colors) == 0:
                 continue
 
-            # Check if neighbors are predominantly bright
-            neighbor_lums = neighbor_colors.sum(axis=1)
-            bright_ratio = np.mean(neighbor_lums > bright_threshold)
+            # Check if neighbors are predominantly bright (using perceptual luminance)
+            neighbor_lums = self._perceptual_luminance(neighbor_colors)
+            bright_ratio = np.mean(neighbor_lums > bright_lum_threshold)
 
             # Only fix if most neighbors are bright (cluster is isolated in bright region)
             if bright_ratio > 0.7:
                 # Replace with most common bright neighbor color
-                bright_neighbors = neighbor_colors[neighbor_lums > bright_threshold]
+                bright_neighbors = neighbor_colors[neighbor_lums > bright_lum_threshold]
                 if len(bright_neighbors) > 0:
                     unique_neighbors, counts = np.unique(
                         bright_neighbors, axis=0, return_counts=True

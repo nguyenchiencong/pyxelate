@@ -19,7 +19,7 @@ from skimage.morphology import dilation as skimage_dilation
 from skimage.transform import resize
 from skimage.util import view_as_blocks
 
-from scipy.ndimage import convolve
+from scipy.ndimage import convolve, label, binary_dilation
 
 from numba import njit
 
@@ -229,6 +229,7 @@ class Pyx(BaseEstimator, TransformerMixin):
         svd: bool = True,
         alpha: float = 0.6,
         backend: BackendType = "cpu",
+        postprocess: bool = True,
     ) -> None:
         if (width is not None or height is not None) and factor is not None:
             raise ValueError(
@@ -285,6 +286,7 @@ class Pyx(BaseEstimator, TransformerMixin):
         self.dither = dither
         self.svd = bool(svd)
         self.alpha = float(alpha)
+        self.postprocess = bool(postprocess)
         # instantiate BGM model
         self.model = BGM(self.palette, self.find_palette)
         self.is_fitted = False
@@ -304,6 +306,87 @@ class Pyx(BaseEstimator, TransformerMixin):
             return original_height // self.factor, original_width // self.factor
         else:
             return original_height, original_width
+
+    def _fix_dark_speckles(
+        self, X: np.ndarray, max_cluster_size: int = 10, bright_threshold: int = 150
+    ) -> np.ndarray:
+        """Remove isolated dark pixel clusters that appear as artifacts in bright regions.
+
+        This post-processing step identifies small clusters of the darkest palette color
+        that are surrounded by bright pixels and replaces them with the most common
+        neighboring color. This fixes speckle artifacts caused by the HSV/SCALE_RGB
+        processing pushing certain saturated colors to extreme values.
+
+        Args:
+            X: The pixelated image (H, W, 3) as uint8
+            max_cluster_size: Maximum size of clusters to consider as artifacts (default 10)
+            bright_threshold: Minimum luminance sum for a pixel to be considered "bright" (default 150)
+
+        Returns:
+            The image with dark speckle artifacts removed
+        """
+        # Handle images with alpha channel
+        has_alpha = X.shape[2] == 4
+        if has_alpha:
+            rgb = X[:, :, :3]
+            alpha = X[:, :, 3]
+        else:
+            rgb = X
+
+        # Find the darkest color in the palette
+        colors = np.unique(rgb.reshape(-1, 3), axis=0)
+        if len(colors) <= 1:
+            return X  # Nothing to fix
+
+        luminances = colors.sum(axis=1)
+        darkest = colors[np.argmin(luminances)]
+
+        # Find all pixels matching the darkest color
+        dark_mask = np.all(rgb == darkest, axis=2)
+
+        # Label connected components of dark pixels
+        labeled, num_features = label(dark_mask)
+        if num_features == 0:
+            return X  # No dark pixels to fix
+
+        # Process each cluster
+        fixed = rgb.copy()
+        for i in range(1, num_features + 1):
+            cluster_mask = labeled == i
+            size = np.sum(cluster_mask)
+
+            # Only process small clusters (likely artifacts)
+            if size > max_cluster_size:
+                continue
+
+            # Get the boundary of this cluster (2 pixels out for better context)
+            dilated = binary_dilation(binary_dilation(cluster_mask))
+            boundary = dilated & ~cluster_mask
+
+            # Get colors of neighboring pixels
+            neighbor_colors = rgb[boundary]
+            if len(neighbor_colors) == 0:
+                continue
+
+            # Check if neighbors are predominantly bright
+            neighbor_lums = neighbor_colors.sum(axis=1)
+            bright_ratio = np.mean(neighbor_lums > bright_threshold)
+
+            # Only fix if most neighbors are bright (cluster is isolated in bright region)
+            if bright_ratio > 0.7:
+                # Replace with most common bright neighbor color
+                bright_neighbors = neighbor_colors[neighbor_lums > bright_threshold]
+                if len(bright_neighbors) > 0:
+                    unique_neighbors, counts = np.unique(
+                        bright_neighbors, axis=0, return_counts=True
+                    )
+                    most_common = unique_neighbors[np.argmax(counts)]
+                    fixed[cluster_mask] = most_common
+
+        # Reconstruct with alpha if needed
+        if has_alpha:
+            return np.dstack((fixed, alpha))
+        return fixed
 
     def _image_to_float(self, image: np.ndarray) -> np.ndarray:
         """Helper function that changes 0 - 255 color representation to 0. - 1.
@@ -751,7 +834,13 @@ class Pyx(BaseEstimator, TransformerMixin):
 
         # return upscaled image
         X_ = np.repeat(np.repeat(X_, self.upscale[0], axis=0), self.upscale[1], axis=1)
-        return X_.astype(np.uint8)
+        X_ = X_.astype(np.uint8)
+
+        # optionally fix dark speckle artifacts
+        if self.postprocess:
+            X_ = self._fix_dark_speckles(X_)
+
+        return X_
 
     def _dither_floyd(
         self, reshaped: np.ndarray, final_shape: Tuple[int, int]

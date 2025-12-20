@@ -141,6 +141,7 @@ This ensures that the documentation always matches the current behavior of the c
 | alpha | For images with transparency, the transformed image's pixel will be either visible/invisible above/below this threshold. Default is `0.6`. |
 | sobel | The size of the sobel operator (N*N area to calculate the gradients for downsampling), must be an `int` larger than 1. Default is `3`, try `2` for a much faster but less accurate output. |
 | depth | How many times should the Pyxelate algorithm be applied to downsample the image. More iteratrions will result in blockier aesthatics. Must be a positive `int`, although it is really time consuming and should never be more than 3. Raise it only for really small images. Default is `1`. |
+| postprocess | Apply post-processing to remove isolated dark pixel artifacts from bright regions. This fixes speckles caused by color space transformations. Default is `True`. Set to `False` for original behavior. |
 
 Showcase of available dithering methods:
 ![Dithering methods](/examples/p_palms.png)

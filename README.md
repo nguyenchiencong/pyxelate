@@ -142,6 +142,7 @@ This ensures that the documentation always matches the current behavior of the c
 | sobel | The size of the sobel operator (N*N area to calculate the gradients for downsampling), must be an `int` larger than 1. Default is `3`, try `2` for a much faster but less accurate output. |
 | depth | How many times should the Pyxelate algorithm be applied to downsample the image. More iteratrions will result in blockier aesthatics. Must be a positive `int`, although it is really time consuming and should never be more than 3. Raise it only for really small images. Default is `1`. |
 | postprocess | Apply post-processing to remove isolated dark pixel artifacts from bright regions. This fixes speckles caused by color space transformations. Default is `True`. Set to `False` for original behavior. |
+| backend | Computation backend: `"cpu"` (default), `"cuda"` for GPU acceleration, or `"auto"` to use GPU if available. See [GPU Acceleration](#gpu-acceleration) section below. |
 
 Showcase of available dithering methods:
 ![Dithering methods](/examples/p_palms.png)
@@ -186,6 +187,58 @@ It is possible to use Pyxelate on a sequence of images to create animations via 
 
 You can turn a video into a sequence of images using [ffmpeg](https://www.ffmpeg.org/).
 
+## GPU Acceleration
+
+Pyxelate supports optional GPU acceleration via [CuPy](https://cupy.dev/) for NVIDIA GPUs. This can significantly speed up processing for large images.
+
+### Installing GPU Support
+
+```bash
+# For CUDA 12.x
+pip install git+https://github.com/nguyenchiencong/pyxelate.git[cuda]
+
+# For CUDA 11.x
+pip install git+https://github.com/nguyenchiencong/pyxelate.git[cuda11]
+
+# Or with uv
+uv add "pyxelate[cuda] @ git+https://github.com/nguyenchiencong/pyxelate.git"
+```
+
+### Using GPU Acceleration
+
+```python
+from pyxelate import Pyx, is_gpu_available
+
+# Check if GPU is available
+print(f"GPU available: {is_gpu_available()}")
+
+# Use GPU acceleration
+pyx = Pyx(factor=8, palette=8, backend="cuda")
+
+# Or auto-detect (uses GPU if available, falls back to CPU)
+pyx = Pyx(factor=8, palette=8, backend="auto")
+
+# Check which backend is being used
+print(f"Using backend: {pyx.backend_name}")
+print(f"Using GPU: {pyx.uses_gpu}")
+```
+
+### CLI Usage
+
+```bash
+# Use GPU acceleration from command line
+pyxelate input.jpg output.png --factor 8 --backend cuda
+
+# Auto-detect backend
+pyxelate input.jpg output.png --factor 8 --backend auto
+```
+
+### Performance Notes
+
+- GPU acceleration is most beneficial for large images (1000x1000 pixels or more)
+- For small images, CPU may be faster due to GPU transfer overhead
+- Operations accelerated: `_pyxelate()`, `_svd()`, `_median()`, and Bayer dithering
+
 # FAQ
 
 The source code is available under the **MIT license** 
@@ -204,6 +257,36 @@ Preprocessing and color space conversion tricks are also applied for better resu
 - Assigning existing palettes will take longer for larger palettes, because [LAB color distance](https://scikit-image.org/docs/dev/api/skimage.color.html#skimage.color.deltaE_ciede2000) has to be calculated between each color separately. 
 - Dithering takes time (especially *atkinson* and *floyd*) as they are implemented in Python (though *atkinson* is now optimized with numba for significant speedup).
 
-<p align="center">
-  <img alt="via OzegoDub" src="./examples/ozego.png" />
-</p>
+## Dark Speckle Artifact Fix
+
+Pyxelate v2.6.0 introduces automatic post-processing to fix dark speckle artifacts that can appear in bright regions (like sky). This is caused by color space transformations pushing certain saturated colors to extreme values.
+
+```python
+# Post-processing is enabled by default
+pyx = Pyx(factor=8, palette=8)  # postprocess=True
+
+# Disable if you want original behavior
+pyx = Pyx(factor=8, palette=8, postprocess=False)
+
+# From CLI
+pyxelate input.jpg output.png --factor 8 --no-postprocess
+```
+
+The fix uses perceptual luminance (ITU-R BT.601) to detect and replace isolated dark pixel clusters in bright regions. It's particularly effective for error-diffusion dithering methods (floyd, atkinson).
+
+## Running Tests
+
+Pyxelate includes a comprehensive test suite. To run tests:
+
+```bash
+# Install dev dependencies
+uv sync --dev
+# or
+pip install -e ".[dev]"
+
+# Run tests
+uv run pytest tests/ -v
+
+# Run with coverage
+uv run pytest tests/ --cov=pyxelate --cov-report=term-missing
+```

@@ -1,6 +1,6 @@
 [project]
 name = "pyxelate"
-version = "2.5.0"
+version = "2.6.0"
 description = "Downsample images to 8-bit pixel art."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -15,3 +15,19 @@ dependencies = [
 [project.optional-dependencies]
 cuda = ["cupy-cuda12x>=13.0.0"]
 cuda11 = ["cupy-cuda11x>=13.0.0"]
+dev = ["pytest>=8.0.0", "pytest-cov>=4.0.0"]
+
+[project.scripts]
+pyxelate = "pyxelate.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+]

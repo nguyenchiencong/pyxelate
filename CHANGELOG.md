@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2025-12-20
+
+### Added
+- **Post-processing to fix dark speckle artifacts** - New `postprocess` parameter (default `True`) removes isolated dark pixel clusters from bright regions
+- `_perceptual_luminance()` helper using ITU-R BT.601 weights for accurate human-vision-based detection
+- `_fix_dark_speckles()` method detects ALL dark colors below threshold (not just darkest)
+- CLI: `--backend` option to select computation backend (`cpu`, `cuda`, or `auto`)
+- CLI: `--no-postprocess` option to disable dark speckle artifact removal
+- CLI: `bayer8` dithering option (8x8 Bayer matrix)
+- Explicit CLI entry point in `pyproject.toml`
+
+### Changed
+- Post-processing particularly effective for error-diffusion dithering (38-48% artifact reduction for floyd/atkinson)
+
 ## [2.5.1] - 2025-06-19
 
 ### Documentation
